@@ -18,6 +18,8 @@ import (
 	"time"
 )
 
+var maxRunTime time.Duration
+
 var wormgatePort string
 
 var path string
@@ -34,6 +36,7 @@ var runningSegment struct {
 func main() {
 
 	flag.StringVar(&wormgatePort, "wp", ":8181", "wormgate port (prefix with colon)")
+	flag.DurationVar(&maxRunTime, "maxrun", time.Minute*10, "max time to run (in case you forget shut down)")
 	flag.Parse()
 
 	allHosts = rocks.ListNodes()
@@ -56,6 +59,19 @@ func main() {
 	rand.Seed(time.Now().Unix())
 
 	flag.Parse()
+
+	// Quit if maxRunTime timout
+	exitReason := make(chan string, 1)
+	go func() {
+		time.Sleep(maxRunTime)
+		exitReason <- fmt.Sprintf("maxrun timeout: %s", maxRunTime)
+	}()
+	go func() {
+		reason := <-exitReason
+		log.Printf(reason)
+		log.Print("Shutting down")
+		os.Exit(0)
+	}()
 
 	http.HandleFunc("/", IndexHandler)
 	http.HandleFunc("/wormgate", WormGateHandler)
@@ -149,7 +165,9 @@ func WormGateHandler(w http.ResponseWriter, r *http.Request) {
 	// Start command, do not wait for it to complete
 	binary := extractionpath + "/" + "segment"
 	cmdline = []string{"stdbuf", "-oL", "-eL",
-			binary, "run", "-wp", wormgatePort, "-sp", segmentPort}
+			//binary, "run", "-wp", wormgatePort, "-sp", segmentPort}
+			binary, "run", "-wp", wormgatePort, "-sp", segmentPort, "-maxrun", maxRunTime.String()}
+
 	log.Printf("Running segment: %q", cmdline)
 	cmd := exec.Command(cmdline[0], cmdline[1:]...)
 	cmd.Stdout = os.Stdout

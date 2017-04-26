@@ -28,6 +28,8 @@ var alivelist []string
 
 var ping int32
 
+var maxRunTime time.Duration
+
 
 func main() {
 
@@ -61,6 +63,7 @@ func main() {
 func addCommonFlags(flagset *flag.FlagSet) {
 	flagset.StringVar(&wormgatePort, "wp", ":8181", "wormgate port (prefix with colon)")
 	flagset.StringVar(&segmentPort, "sp", ":8182", "segment port (prefix with colon)")
+	flagset.DurationVar(&maxRunTime, "maxrun", time.Minute*10, "max time to run(in case you forget to shut down)")
 }
 
 
@@ -234,6 +237,15 @@ func heartbeat() {
 }
 
 func startSegmentServer() {
+	// Quit if maxRunTime timeout
+	exitReason := make(chan string, 1)
+	go func() {
+		reason :=  <-exitReason
+		log.Printf(reason)
+		log.Print("Shutting down")
+		os.Exit(0)
+	}()
+
 	http.HandleFunc("/", IndexHandler)
 	http.HandleFunc("/targetsegments", targetSegmentsHandler)
 	http.HandleFunc("/shutdown", shutdownHandler)
