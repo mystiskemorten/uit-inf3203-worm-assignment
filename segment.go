@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 var wormgatePort string
@@ -19,6 +20,13 @@ var segmentPort string
 var hostname string
 
 var targetSegments int32
+
+var segmentClient *http.Client
+
+var targetlist []string
+var alivelist []string
+
+var ping int32
 
 
 func main() {
@@ -88,13 +96,155 @@ func sendSegment(address string) {
 	}
 }
 
+func createClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{},
+	}
+}
+
+
+
+func httpGetOk(client *http.Client, url string) (bool, string, error) {
+	resp, err := client.Get(url)
+	isOk := err == nil && resp.StatusCode == 200
+	body := ""
+	if err != nil {
+		if strings.Contains(fmt.Sprint(err), "connection refused") {
+			// ignore connection refused errors
+			err = nil
+		} else {
+			log.Printf("Error checking %s: %s", url, err)
+		}
+	} else {
+		var bytes []byte
+		bytes, err = ioutil.ReadAll(resp.Body)
+		body = string(bytes)
+		resp.Body.Close()
+	}
+	return isOk, body, err
+}
+
+
+func doBcastPost(node string) error {
+	url := fmt.Sprintf("http://%s%s/sync", node, segmentPort)
+	resp, err := segmentClient.PostForm(url, nil)
+	if err != nil && !strings.Contains(fmt.Sprint(err), "refused") {
+		log.Printf("Error synch %s: %s", node, err)
+	}
+	if err == nil {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	return err
+
+}
+
+func syncHandler(w http.ResponseWriter, r *http.Request) {
+	var ts int32
+
+	pc, rateErr := fmt.Fscanf(r.Body, "%d", &ts)
+	if pc != 1 || rateErr != nil {
+		log.Printf("Error parsing targetSegments (%d items): %s", pc, rateErr)
+	}
+
+	atomic.StoreInt32(&targetSegments, ts)
+	// Consume and close body
+	io.Copy(ioutil.Discard, r.Body)
+	r.Body.Close()
+
+	// Shut down
+	log.Printf("Received sync command")
+}
+
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
+}
+
+func remove(slice []string, s int) []string {
+	return append(slice[:s], slice[s+1:]...)
+}
+
+func heartbeat() {
+	segmentClient = createClient()
+	list := fetchReachableHosts()
+
+
+	for {
+		if len(alivelist) > 0 {
+			for i, addr := range alivelist {
+				segmentUrl := fmt.Sprintf("http://%s%s/", addr, segmentPort)
+				segment, _, _ := httpGetOk(segmentClient, segmentUrl)
+				//segment, segBody, segErr := httpGetOk(segmentClient, segmentUrl)
+
+				if segment == true {
+					//log.Printf("\nAlive on addr: %s\n", addr)
+					if contains(alivelist, addr) == false {
+						ping++
+						alivelist = append(alivelist, addr)
+						targetlist = remove(targetlist, i)
+
+					}
+				} else {
+					alivelist = remove(alivelist, i)
+					targetlist = append(targetlist, addr)
+					ping--
+				}
+
+				//if segErr != nil {
+					//ping++
+				//}
+			}
+
+		} else {
+			for i, addr := range list {
+				segmentUrl := fmt.Sprintf("http://%s%s/", addr, segmentPort)
+				segment, _, _ := httpGetOk(segmentClient, segmentUrl)
+				//segment, segBody, segErr := httpGetOk(segmentClient, segmentUrl)
+
+				if segment == true {
+					//log.Printf("\nAlive on addr: %s\n", addr)
+					//targetlist = append(list[:i], list[i+1:]...)
+					if len(targetlist) > 0 {
+						targetlist = remove(targetlist, i)
+
+					} else {
+						targetlist = remove(list, i)
+					}
+					ping++
+					alivelist = append(alivelist, addr)
+
+				}
+
+				//if segErr != nil {
+					//ping++
+				//}
+			}
+
+		}
+		log.Printf("\nHeartbeats: %d\n\ntargetSeg: %d\n", ping, targetSegments)
+		time.Sleep(500 * time.Millisecond)
+
+	}
+
+}
+
 func startSegmentServer() {
 	http.HandleFunc("/", IndexHandler)
 	http.HandleFunc("/targetsegments", targetSegmentsHandler)
 	http.HandleFunc("/shutdown", shutdownHandler)
+	http.HandleFunc("/sync", syncHandler)
 
 	log.Printf("Starting segment server on %s%s\n", hostname, segmentPort)
 	log.Printf("Reachable hosts: %s", strings.Join(fetchReachableHosts()," "))
+
+
+	go heartbeat()
+
 	err := http.ListenAndServe(segmentPort, nil)
 	if err != nil {
 		log.Panic(err)
@@ -112,6 +262,7 @@ func IndexHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "%.3f\n", killRateGuess)
 }
 
+
 func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var ts int32
@@ -126,7 +277,34 @@ func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("New targetSegments: %d", ts)
 	atomic.StoreInt32(&targetSegments, ts)
+
+
+	//doBcastPost(addr)
+
+
+
+
+	if ping < targetSegments {
+
+		for _, addr := range targetlist[:targetSegments-ping] {
+			sendSegment(addr)
+		}
+
+
+	} else {
+		//poster killtime
+		//one tries to kill others lay off
+		//if he dont report kill success, others need to heartbeat to check if he died
+		//and then go back to either increment or decrease state
+
+		//First one to say I will kill myself
+		for _, addr := range alivelist {
+			doBcastPost(addr)
+		}
+		//The others will then need to heartbeat to see who dissappread
+	}
 }
+
 
 func shutdownHandler(w http.ResponseWriter, r *http.Request) {
 
@@ -153,5 +331,17 @@ func fetchReachableHosts() []string {
 
 	trimmed := strings.TrimSpace(body)
 	nodes := strings.Split(trimmed, "\n")
+
+
+	for i, v := range nodes {
+		if v == "compute-1-4" {
+			nodes = remove(nodes, i)
+			break
+		}
+		if v == "compute-2-20" {
+			nodes = remove(nodes, i)
+			break
+		}
+	}
 	return nodes
 }
