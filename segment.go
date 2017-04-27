@@ -130,7 +130,9 @@ func httpGetOk(client *http.Client, url string) (bool, string, error) {
 
 func doBcastPost(node string) error {
 	url := fmt.Sprintf("http://%s%s/sync", node, segmentPort)
-	resp, err := segmentClient.PostForm(url, nil)
+	postBody := strings.NewReader(fmt.Sprint(targetSegments))
+
+	resp, err := segmentClient.Post(url, "text/plain", postBody)
 	if err != nil && !strings.Contains(fmt.Sprint(err), "refused") {
 		log.Printf("Error synch %s: %s", node, err)
 	}
@@ -175,36 +177,21 @@ func remove(slice []string, s int) []string {
 func heartbeat() {
 	segmentClient = createClient()
 	list := fetchReachableHosts()
-
+	targetlist = fetchReachableHosts()
 
 	for {
-		if len(alivelist) > 0 {
-			for i, addr := range alivelist {
-				segmentUrl := fmt.Sprintf("http://%s%s/", addr, segmentPort)
-				segment, _, _ := httpGetOk(segmentClient, segmentUrl)
-				//segment, segBody, segErr := httpGetOk(segmentClient, segmentUrl)
-
-				if segment == true {
-					//log.Printf("\nAlive on addr: %s\n", addr)
-					if contains(alivelist, addr) == false {
-						ping++
-						alivelist = append(alivelist, addr)
-						targetlist = remove(targetlist, i)
-
-					}
-				} else {
-					alivelist = remove(alivelist, i)
-					targetlist = append(targetlist, addr)
-					ping--
+		ping = 0
+		for i, addr := range list {
+			if addr == hostname || addr+".local" == hostname {
+				ping++
+				if contains(alivelist, addr) == false {
+					alivelist = append(alivelist, addr)
+				}
+				if contains(targetlist, addr) == true {
+					targetlist = remove(targetlist, i)
 				}
 
-				//if segErr != nil {
-					//ping++
-				//}
-			}
-
-		} else {
-			for i, addr := range list {
+			} else {
 				segmentUrl := fmt.Sprintf("http://%s%s/", addr, segmentPort)
 				segment, _, _ := httpGetOk(segmentClient, segmentUrl)
 				//segment, segBody, segErr := httpGetOk(segmentClient, segmentUrl)
@@ -212,24 +199,23 @@ func heartbeat() {
 				if segment == true {
 					//log.Printf("\nAlive on addr: %s\n", addr)
 					//targetlist = append(list[:i], list[i+1:]...)
-					if len(targetlist) > 0 {
-						targetlist = remove(targetlist, i)
-
-					} else {
-						targetlist = remove(list, i)
-					}
 					ping++
-					alivelist = append(alivelist, addr)
-
+					if contains(alivelist, addr) == false {
+						alivelist = append(alivelist, addr)
+					}
+					if contains(targetlist, addr) == true {
+						targetlist = remove(targetlist, i)
+					}
 				}
 
-				//if segErr != nil {
-					//ping++
-				//}
+			//if segErr != nil {
+				//ping++
+			//}
 			}
-
 		}
+
 		log.Printf("\nHeartbeats: %d\n\ntargetSeg: %d\n", ping, targetSegments)
+		log.Printf("\nActive list: %s\n", alivelist)
 		time.Sleep(500 * time.Millisecond)
 
 	}
@@ -291,29 +277,40 @@ func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 	atomic.StoreInt32(&targetSegments, ts)
 
 
-	//doBcastPost(addr)
+	if len(alivelist) > 1 {
+		for _, addr := range alivelist {
+			if addr+".local" != hostname {
+				doBcastPost(addr)
 
-
-
-
-	if ping < targetSegments {
-
-		for _, addr := range targetlist[:targetSegments-ping] {
-			sendSegment(addr)
+			}
 		}
-
 
 	} else {
-		//poster killtime
-		//one tries to kill others lay off
-		//if he dont report kill success, others need to heartbeat to check if he died
-		//and then go back to either increment or decrease state
 
-		//First one to say I will kill myself
-		for _, addr := range alivelist {
-			doBcastPost(addr)
+		if ping < targetSegments {
+			if hostname == "compute-1-6.local" {
+				for _, addr := range targetlist[:targetSegments-ping] {
+					//targetlist = remove(targetlist, i)
+					sendSegment(addr)
+					time.Sleep(500 * time.Millisecond)
+					doBcastPost(addr)
+				}
+
+			}
+
+		} else {
+			//poster killtime
+			//one tries to kill others lay off
+			//if he dont report kill success, others need to heartbeat to check if he died
+			//and then go back to either increment or decrease state
+
+			//First one to say I will kill myself
+			for _, addr := range alivelist {
+				doBcastPost(addr)
+			}
+			//The others will then need to heartbeat to see who dissappread
 		}
-		//The others will then need to heartbeat to see who dissappread
+
 	}
 }
 
@@ -348,11 +345,9 @@ func fetchReachableHosts() []string {
 	for i, v := range nodes {
 		if v == "compute-1-4" {
 			nodes = remove(nodes, i)
-			break
 		}
 		if v == "compute-2-20" {
 			nodes = remove(nodes, i)
-			break
 		}
 	}
 	return nodes
