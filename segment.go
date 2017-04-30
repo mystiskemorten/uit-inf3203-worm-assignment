@@ -285,6 +285,14 @@ func remove(slice []string, s string) {
 	}
 }
 
+func remove3(slice []string, s string) {
+	for i, a := range slice {
+		if s == a {
+			alivelist = append(slice[:i], slice[i+1:]...)
+		}
+	}
+}
+
 func hash(s string) uint32 {
 	h := fnv.New32a()
 	h.Write([]byte(s))
@@ -337,6 +345,11 @@ func heartbeat() {
 						//log.Printf("%s remove %s", hostname, addr)
 						//log.Printf("Targetlist %s", targetlist[:5])
 					}
+				} else {
+					if contains(alivelist, addr) == true {
+						remove3(alivelist, addr)
+						targetlist = append(targetlist, addr)
+					}
 				}
 
 			//if segErr != nil {
@@ -345,8 +358,8 @@ func heartbeat() {
 			}
 		}
 
-		log.Printf("\nHeartbeats: %d\n\ntargetSeg: %d\n\nTargetlist: %s \nLotteryNUM: %d\n", ping, targetSegments, targetlist[:5], rticket)
-		//log.Printf("\nActive list: %s\n", alivelist)
+		log.Printf("\nHeartbeats: %d\n\ntargetSeg: %d\n\nTargetlist: %s \nLotteryNUM: %d\n", ping, targetSegments, targetlist, rticket)
+		log.Printf("\nActive list: %s\n", alivelist)
 		time.Sleep(500 * time.Millisecond)
 
 	}
@@ -397,6 +410,7 @@ func kill_seg() {
 		//targetlist = remove(targetlist, i)
 		log.Printf("Host: %s tries to kill: %s", hostname, addr)
 		//log.Printf("Targetlist: %s", targetlist)
+		//remove(alivelist, addr)
 		doWormShutdownPost(addr)
 		time.Sleep(500 * time.Millisecond)
 		//kanskje broadcaste hvem som dor
@@ -522,5 +536,5 @@ func fetchReachableHosts() []string {
 			nodes = remove2(nodes, i)
 		}
 	}
-	return nodes[14:19]
+	return nodes[14:24]
 }
