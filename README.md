@@ -96,7 +96,7 @@ Build the Go source:
 
 Start the command and report center / visualizer (press Ctrl+C to exit):
 
-    ./visualize -wp :8181 -sp :8182
+    ./visualize -wp :9037 -sp :9040
 
 Start a worm gate on one compute node (you'll want to do this in another
 terminal window so you can leave the visualizer running):

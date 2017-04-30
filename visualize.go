@@ -23,8 +23,8 @@ import (
 const minx, maxx = 1, 3
 const miny, maxy = 0, 59
 const colwidth = 20
-const refreshRate = 100 * time.Millisecond
-const pollRate = refreshRate / 2
+const refreshRate = 200 * time.Millisecond
+const pollRate = refreshRate
 const pollErrWait = 20 * time.Second
 
 var maxRunTime time.Duration

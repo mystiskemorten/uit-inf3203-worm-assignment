@@ -12,6 +12,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"sync"
+	"hash/fnv"
+	"math"
 )
 
 var wormgatePort string
@@ -30,10 +33,23 @@ var ping int32
 
 var maxRunTime time.Duration
 
+type Lottery struct {
+	mux sync.Mutex
+	lottery []int
+}
+
+var ticket uint32
+var rticket uint32
+var ticketlist []uint32
+
+
 
 func main() {
 
 	hostname, _ = os.Hostname()
+	strip := strings.Split(hostname, ".local")
+	hn := strip[0]
+	ticket = hash(hn)
 	log.SetPrefix(hostname + " segment: ")
 
 	var spreadMode = flag.NewFlagSet("spread", flag.ExitOnError)
@@ -134,7 +150,7 @@ func doBcastPost(node string) error {
 
 	resp, err := segmentClient.Post(url, "text/plain", postBody)
 	if err != nil && !strings.Contains(fmt.Sprint(err), "refused") {
-		log.Printf("Error synch %s: %s", node, err)
+		log.Printf("Error sync %s: %s", node, err)
 	}
 	if err == nil {
 		io.Copy(ioutil.Discard, resp.Body)
@@ -144,12 +160,44 @@ func doBcastPost(node string) error {
 
 }
 
+func doBcastTicket(node string) error {
+	rticket = 1337
+	url := fmt.Sprintf("http://%s%s/ticket", node, segmentPort)
+	postBody := strings.NewReader(fmt.Sprint(rticket))
+
+	resp, err := segmentClient.Post(url, "text/plain", postBody)
+	if err != nil && !strings.Contains(fmt.Sprint(err), "refused") {
+		log.Printf("Error ticket %s: %s", node, err)
+	}
+	if err == nil {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	return err
+}
+
+func doWormShutdownPost(node string) error {
+	log.Printf("Posting shutdown to %s", node)
+
+	url := fmt.Sprintf("http://%s%s/shutdown", node, segmentPort)
+
+	resp, err := segmentClient.PostForm(url, nil)
+	if err != nil && !strings.Contains(fmt.Sprint(err), "refused") {
+		log.Printf("Error posting targetSegments %s: %s", node, err)
+	}
+	if err == nil {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	return err
+}
+
 func syncHandler(w http.ResponseWriter, r *http.Request) {
 	var ts int32
 
 	pc, rateErr := fmt.Fscanf(r.Body, "%d", &ts)
 	if pc != 1 || rateErr != nil {
-		log.Printf("Error parsing targetSegments (%d items): %s", pc, rateErr)
+		log.Printf("Error parsing synctarseg (%d items): %s", pc, rateErr)
 	}
 
 	atomic.StoreInt32(&targetSegments, ts)
@@ -161,6 +209,65 @@ func syncHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Received sync command")
 }
 
+func calculate_diff(a uint32, b uint32) uint32{
+	f := float64(a)
+	f2 := float64(b)
+
+	diff := f - f2
+	abs := math.Abs(diff)
+
+	return uint32(abs)
+}
+
+func find_winner() {
+	//Check if ur the winner or loser
+	var lowest uint32
+	var winner uint32
+	lowest = 0
+
+	for _, num := range ticketlist {
+		//log.Printf("Enter")
+		diff := calculate_diff(num, rticket)
+
+		if lowest == 0 {
+			lowest = diff
+			winner = num
+			//log.Printf("winner1 %d", winner)
+		} else {
+			if lowest > diff {
+				//log.Printf("winner2 %d", winner)
+				lowest = diff
+				winner = num
+			}
+		}
+	}
+	if winner == ticket {
+		if ping < targetSegments {
+			spawn_seg()
+		} else {
+			//kill seg
+			kill_seg()
+		}
+	}
+
+}
+
+func lotteryHandler(w http.ResponseWriter, r *http.Request) {
+	var t uint32
+
+	pc, rateErr := fmt.Fscanf(r.Body, "%d", &t)
+	if pc != 1 || rateErr != nil {
+		log.Printf("Error parsing lotteryticket (%d items): %s", pc, rateErr)
+	}
+
+	atomic.StoreUint32(&rticket, t)
+	// Consume and close body
+	io.Copy(ioutil.Discard, r.Body)
+	r.Body.Close()
+
+	find_winner()
+}
+
 func contains(s []string, e string) bool {
 	for _, a := range s {
 		if a == e {
@@ -170,8 +277,19 @@ func contains(s []string, e string) bool {
 	return false
 }
 
-func remove(slice []string, s int) []string {
-	return append(slice[:s], slice[s+1:]...)
+func remove(slice []string, s string) {
+	for i, a := range slice {
+		if s == a {
+			targetlist = append(slice[:i], slice[i+1:]...)
+		}
+	}
+}
+
+func hash(s string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(s))
+	return h.Sum32()
+
 }
 
 func heartbeat() {
@@ -181,14 +299,23 @@ func heartbeat() {
 
 	for {
 		ping = 0
-		for i, addr := range list {
+		for _, addr := range list {
 			if addr == hostname || addr+".local" == hostname {
 				ping++
 				if contains(alivelist, addr) == false {
+					//if hostname == addr+".local" {
+						//strip := strings.Split(addr, ".local")
+						//addr = strip[0]
+
+					//}
+					tmp := hash(addr)
+					ticketlist = append(ticketlist, tmp)
 					alivelist = append(alivelist, addr)
 				}
 				if contains(targetlist, addr) == true {
-					targetlist = remove(targetlist, i)
+					remove(targetlist, addr)
+					//log.Printf("%s remove %s", hostname, addr)
+					//log.Printf("Targetlist %s", targetlist[:5])
 				}
 
 			} else {
@@ -201,10 +328,14 @@ func heartbeat() {
 					//targetlist = append(list[:i], list[i+1:]...)
 					ping++
 					if contains(alivelist, addr) == false {
+						tmp := hash(addr)
+						ticketlist = append(ticketlist, tmp)
 						alivelist = append(alivelist, addr)
 					}
 					if contains(targetlist, addr) == true {
-						targetlist = remove(targetlist, i)
+						remove(targetlist, addr)
+						//log.Printf("%s remove %s", hostname, addr)
+						//log.Printf("Targetlist %s", targetlist[:5])
 					}
 				}
 
@@ -214,8 +345,8 @@ func heartbeat() {
 			}
 		}
 
-		log.Printf("\nHeartbeats: %d\n\ntargetSeg: %d\n", ping, targetSegments)
-		log.Printf("\nActive list: %s\n", alivelist)
+		log.Printf("\nHeartbeats: %d\n\ntargetSeg: %d\n\nTargetlist: %s \nLotteryNUM: %d\n", ping, targetSegments, targetlist[:5], rticket)
+		//log.Printf("\nActive list: %s\n", alivelist)
 		time.Sleep(500 * time.Millisecond)
 
 	}
@@ -236,6 +367,7 @@ func startSegmentServer() {
 	http.HandleFunc("/targetsegments", targetSegmentsHandler)
 	http.HandleFunc("/shutdown", shutdownHandler)
 	http.HandleFunc("/sync", syncHandler)
+	http.HandleFunc("/ticket", lotteryHandler)
 
 	log.Printf("Starting segment server on %s%s\n", hostname, segmentPort)
 	log.Printf("Reachable hosts: %s", strings.Join(fetchReachableHosts()," "))
@@ -260,7 +392,30 @@ func IndexHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "%.3f\n", killRateGuess)
 }
 
+func kill_seg() {
+	for _, addr := range alivelist[:ping - targetSegments] {
+		//targetlist = remove(targetlist, i)
+		log.Printf("Host: %s tries to kill: %s", hostname, addr)
+		//log.Printf("Targetlist: %s", targetlist)
+		doWormShutdownPost(addr)
+		time.Sleep(500 * time.Millisecond)
+		//kanskje broadcaste hvem som dor
+	}
 
+}
+
+
+func spawn_seg() {
+	for _, addr := range targetlist[:targetSegments-ping] {
+		//targetlist = remove(targetlist, i)
+		log.Printf("Host: %s tries to boot: %s", hostname, addr)
+		//log.Printf("Targetlist: %s", targetlist)
+		sendSegment(addr)
+		time.Sleep(500 * time.Millisecond)
+		doBcastPost(addr)
+	}
+
+}
 func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var ts int32
@@ -279,38 +434,51 @@ func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 
 	if len(alivelist) > 1 {
 		for _, addr := range alivelist {
-			if addr+".local" != hostname {
+			if addr != hostname || addr+".local" != hostname {
+				//Sync targseg
 				doBcastPost(addr)
+				time.Sleep(500 * time.Millisecond)
+				//start lottery
+
+				if addr+".local" != hostname {
+					log.Printf("\nBroadcasting from %s to %s", hostname, addr)
+					doBcastTicket(addr)
+				}
+				find_winner()
+				time.Sleep(500 * time.Millisecond)
+
 
 			}
 		}
-
+		//start lottery fordi alle har fatt sync
+		for _, addr := range alivelist {
+			if addr != hostname || addr+".local" != hostname {
+				//Start lottery
+				doBcastTicket(addr)
+				time.Sleep(500 * time.Millisecond)
+				find_winner()
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
 	} else {
 
 		if ping < targetSegments {
-			if hostname == "compute-1-6.local" {
-				for _, addr := range targetlist[:targetSegments-ping] {
-					//targetlist = remove(targetlist, i)
-					sendSegment(addr)
-					time.Sleep(500 * time.Millisecond)
-					doBcastPost(addr)
-				}
-
-			}
-
-		} else {
-			//poster killtime
-			//one tries to kill others lay off
-			//if he dont report kill success, others need to heartbeat to check if he died
-			//and then go back to either increment or decrease state
-
-			//First one to say I will kill myself
-			for _, addr := range alivelist {
+			//if hostname == "compute-1-6.local" {
+			for _, addr := range targetlist[:targetSegments-ping] {
+				//targetlist = remove(targetlist, i)
+				//alivelist = append(alivelist, addr)
+				sendSegment(addr)
+				time.Sleep(500 * time.Millisecond)
 				doBcastPost(addr)
 			}
-			//The others will then need to heartbeat to see who dissappread
-		}
 
+			//for i, addr := range alivelist {
+				//if contains(targetlist, addr) == true {
+					//targetlist = remove(targetlist, i)
+				//}
+
+			//}
+		}
 	}
 }
 
@@ -324,6 +492,10 @@ func shutdownHandler(w http.ResponseWriter, r *http.Request) {
 	// Shut down
 	log.Printf("Received shutdown command, committing suicide")
 	os.Exit(0)
+}
+
+func remove2(slice []string, s int) []string {
+	return append(slice[:s], slice[s+1:]...)
 }
 
 func fetchReachableHosts() []string {
@@ -344,11 +516,11 @@ func fetchReachableHosts() []string {
 
 	for i, v := range nodes {
 		if v == "compute-1-4" {
-			nodes = remove(nodes, i)
+			nodes = remove2(nodes, i)
 		}
 		if v == "compute-2-20" {
-			nodes = remove(nodes, i)
+			nodes = remove2(nodes, i)
 		}
 	}
-	return nodes
+	return nodes[14:19]
 }
