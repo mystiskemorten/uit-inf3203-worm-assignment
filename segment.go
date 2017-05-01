@@ -15,6 +15,7 @@ import (
 	"sync"
 	"hash/fnv"
 	"math"
+	"math/rand"
 )
 
 var wormgatePort string
@@ -41,7 +42,36 @@ type Lottery struct {
 var ticket uint32
 var rticket uint32
 var ticketlist []uint32
+var winner uint32
 
+var src = rand.NewSource(time.Now().UnixNano())
+
+const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+const (
+	letterIdxBits = 6			//6 bits to represent a letter index
+	letterIdxMask = 1<<letterIdxBits - 1	//All 1-bits, as many as letterIdxBits
+	letterIdxMax = 63 / letterIdxBits 	// # of letter indices fitting in 63 bits
+)
+
+func RandString(n int) string {
+	b := make([]byte, n)
+	// A src.Int63() generates 63 random bits, enough for letterIdxMax characters
+	for i, cache, remain := n-1, src.Int63(), letterIdxMax; i >= 0; {
+		if remain == 0 {
+			cache, remain = src.Int63(), letterIdxMax
+		}
+		if idx := int(cache & letterIdxMax); idx < len(letterBytes) {
+			b[i] = letterBytes[idx]
+			i--
+		}
+		cache >>= letterIdxBits
+		remain--
+	}
+
+	return string(b)
+
+}
 
 
 func main() {
@@ -161,7 +191,8 @@ func doBcastPost(node string) error {
 }
 
 func doBcastTicket(node string) error {
-	rticket = 1337
+	random := RandString(10)
+	rticket = hash(random)
 	url := fmt.Sprintf("http://%s%s/ticket", node, segmentPort)
 	postBody := strings.NewReader(fmt.Sprint(rticket))
 
@@ -222,7 +253,6 @@ func calculate_diff(a uint32, b uint32) uint32{
 func find_winner() {
 	//Check if ur the winner or loser
 	var lowest uint32
-	var winner uint32
 	lowest = 0
 
 	for _, num := range ticketlist {
@@ -244,8 +274,9 @@ func find_winner() {
 	if winner == ticket {
 		if ping < targetSegments {
 			spawn_seg()
-		} else {
+		} else if ping > targetSegments {
 			//kill seg
+			//log.Printf("Find winner kill hb %d, ts %d", ping, targetSegments)
 			kill_seg()
 		}
 	}
@@ -357,10 +388,48 @@ func heartbeat() {
 			//}
 			}
 		}
+		//synce ogsa gjore lotteri
+		if len(alivelist) > 1 && targetSegments > 1 {
+			for _, addr := range alivelist {
+				if addr != hostname || addr+".local" != hostname {
+					//Sync targseg
+					doBcastPost(addr)
+					//time.Sleep(500 * time.Millisecond)
+
+				}
+			}
+			//start lottery fordi alle har fatt sync
+			for _, addr := range alivelist {
+				if addr != hostname || addr+".local" != hostname {
+					//Start lottery
+					doBcastTicket(addr)
+					//time.Sleep(500 * time.Millisecond)
+					find_winner()
+					//time.Sleep(500 * time.Millisecond)
+				}
+			}
+			if winner == ticket {
+				if ping < targetSegments {
+					spawn_seg()
+				} else if ping > targetSegments {
+					//kill seg
+					//log.Printf("Heartbitkill")
+					kill_seg()
+				}
+			}
+
+		}
+		//}else {
+			////Im alone
+			//if ping < targetSegments {
+				//spawn_seg()
+			//}
+		//}
+		
 
 		log.Printf("\nHeartbeats: %d\n\ntargetSeg: %d\n\nTargetlist: %s \nLotteryNUM: %d\n", ping, targetSegments, targetlist, rticket)
 		log.Printf("\nActive list: %s\n", alivelist)
-		time.Sleep(500 * time.Millisecond)
+		//time.Sleep(500 * time.Millisecond)
 
 	}
 
@@ -412,7 +481,7 @@ func kill_seg() {
 		//log.Printf("Targetlist: %s", targetlist)
 		//remove(alivelist, addr)
 		doWormShutdownPost(addr)
-		time.Sleep(500 * time.Millisecond)
+		//time.Sleep(500 * time.Millisecond)
 		//kanskje broadcaste hvem som dor
 	}
 
@@ -425,7 +494,7 @@ func spawn_seg() {
 		log.Printf("Host: %s tries to boot: %s", hostname, addr)
 		//log.Printf("Targetlist: %s", targetlist)
 		sendSegment(addr)
-		time.Sleep(500 * time.Millisecond)
+		//time.Sleep(500 * time.Millisecond)
 		doBcastPost(addr)
 	}
 
@@ -451,16 +520,7 @@ func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 			if addr != hostname || addr+".local" != hostname {
 				//Sync targseg
 				doBcastPost(addr)
-				time.Sleep(500 * time.Millisecond)
-				//start lottery
-
-				if addr+".local" != hostname {
-					log.Printf("\nBroadcasting from %s to %s", hostname, addr)
-					doBcastTicket(addr)
-				}
-				find_winner()
-				time.Sleep(500 * time.Millisecond)
-
+				//time.Sleep(500 * time.Millisecond)
 
 			}
 		}
@@ -469,20 +529,19 @@ func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 			if addr != hostname || addr+".local" != hostname {
 				//Start lottery
 				doBcastTicket(addr)
-				time.Sleep(500 * time.Millisecond)
+				//time.Sleep(500 * time.Millisecond)
 				find_winner()
-				time.Sleep(500 * time.Millisecond)
+				//time.Sleep(500 * time.Millisecond)
 			}
 		}
 	} else {
-
 		if ping < targetSegments {
 			//if hostname == "compute-1-6.local" {
 			for _, addr := range targetlist[:targetSegments-ping] {
 				//targetlist = remove(targetlist, i)
 				//alivelist = append(alivelist, addr)
 				sendSegment(addr)
-				time.Sleep(500 * time.Millisecond)
+				//time.Sleep(500 * time.Millisecond)
 				doBcastPost(addr)
 			}
 
@@ -536,5 +595,6 @@ func fetchReachableHosts() []string {
 			nodes = remove2(nodes, i)
 		}
 	}
-	return nodes[14:24]
+	//return nodes[14:24]
+	return nodes
 }
