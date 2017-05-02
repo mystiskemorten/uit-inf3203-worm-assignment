@@ -208,9 +208,9 @@ func doBcastTicket(node string) error {
 }
 
 func doWormShutdownPost(node string) error {
-	log.Printf("Posting shutdown to %s", node)
+	log.Printf("Posting killsegment to %s", node)
 
-	url := fmt.Sprintf("http://%s%s/shutdown", node, segmentPort)
+	url := fmt.Sprintf("http://%s%s/killsegments", node, segmentPort)
 
 	resp, err := segmentClient.PostForm(url, nil)
 	if err != nil && !strings.Contains(fmt.Sprint(err), "refused") {
@@ -262,10 +262,8 @@ func find_winner() {
 		if lowest == 0 {
 			lowest = diff
 			winner = num
-			//log.Printf("winner1 %d", winner)
 		} else {
 			if lowest > diff {
-				//log.Printf("winner2 %d", winner)
 				lowest = diff
 				winner = num
 			}
@@ -276,7 +274,6 @@ func find_winner() {
 			spawn_seg()
 		} else if ping > targetSegments {
 			//kill seg
-			//log.Printf("Find winner kill hb %d, ts %d", ping, targetSegments)
 			kill_seg()
 		}
 	}
@@ -342,29 +339,19 @@ func heartbeat() {
 			if addr == hostname || addr+".local" == hostname {
 				ping++
 				if contains(alivelist, addr) == false {
-					//if hostname == addr+".local" {
-						//strip := strings.Split(addr, ".local")
-						//addr = strip[0]
-
-					//}
 					tmp := hash(addr)
 					ticketlist = append(ticketlist, tmp)
 					alivelist = append(alivelist, addr)
 				}
 				if contains(targetlist, addr) == true {
 					remove(targetlist, addr)
-					//log.Printf("%s remove %s", hostname, addr)
-					//log.Printf("Targetlist %s", targetlist[:5])
 				}
 
 			} else {
 				segmentUrl := fmt.Sprintf("http://%s%s/", addr, segmentPort)
 				segment, _, _ := httpGetOk(segmentClient, segmentUrl)
-				//segment, segBody, segErr := httpGetOk(segmentClient, segmentUrl)
 
 				if segment == true {
-					//log.Printf("\nAlive on addr: %s\n", addr)
-					//targetlist = append(list[:i], list[i+1:]...)
 					ping++
 					if contains(alivelist, addr) == false {
 						tmp := hash(addr)
@@ -373,8 +360,6 @@ func heartbeat() {
 					}
 					if contains(targetlist, addr) == true {
 						remove(targetlist, addr)
-						//log.Printf("%s remove %s", hostname, addr)
-						//log.Printf("Targetlist %s", targetlist[:5])
 					}
 				} else {
 					if contains(alivelist, addr) == true {
@@ -382,10 +367,6 @@ func heartbeat() {
 						targetlist = append(targetlist, addr)
 					}
 				}
-
-			//if segErr != nil {
-				//ping++
-			//}
 			}
 		}
 		//synce ogsa gjore lotteri
@@ -394,7 +375,6 @@ func heartbeat() {
 				if addr != hostname || addr+".local" != hostname {
 					//Sync targseg
 					doBcastPost(addr)
-					//time.Sleep(500 * time.Millisecond)
 
 				}
 			}
@@ -403,9 +383,7 @@ func heartbeat() {
 				if addr != hostname || addr+".local" != hostname {
 					//Start lottery
 					doBcastTicket(addr)
-					//time.Sleep(500 * time.Millisecond)
 					find_winner()
-					//time.Sleep(500 * time.Millisecond)
 				}
 			}
 			if winner == ticket {
@@ -413,23 +391,14 @@ func heartbeat() {
 					spawn_seg()
 				} else if ping > targetSegments {
 					//kill seg
-					//log.Printf("Heartbitkill")
 					kill_seg()
 				}
 			}
 
 		}
-		//}else {
-			////Im alone
-			//if ping < targetSegments {
-				//spawn_seg()
-			//}
-		//}
-		
 
-		log.Printf("\nHeartbeats: %d\n\ntargetSeg: %d\n\nTargetlist: %s \nLotteryNUM: %d\n", ping, targetSegments, targetlist, rticket)
-		log.Printf("\nActive list: %s\n", alivelist)
-		//time.Sleep(500 * time.Millisecond)
+		//log.Printf("\nHeartbeats: %d\n\ntargetSeg: %d\n\nTargetlist: %s \nLotteryNUM: %d\n", ping, targetSegments, targetlist, rticket)
+		//log.Printf("\nActive list: %s\n", alivelist)
 
 	}
 
@@ -450,6 +419,7 @@ func startSegmentServer() {
 	http.HandleFunc("/shutdown", shutdownHandler)
 	http.HandleFunc("/sync", syncHandler)
 	http.HandleFunc("/ticket", lotteryHandler)
+	http.HandleFunc("/killsegments", killsegmentsHandler)
 
 	log.Printf("Starting segment server on %s%s\n", hostname, segmentPort)
 	log.Printf("Reachable hosts: %s", strings.Join(fetchReachableHosts()," "))
@@ -476,13 +446,8 @@ func IndexHandler(w http.ResponseWriter, r *http.Request) {
 
 func kill_seg() {
 	for _, addr := range alivelist[:ping - targetSegments] {
-		//targetlist = remove(targetlist, i)
 		log.Printf("Host: %s tries to kill: %s", hostname, addr)
-		//log.Printf("Targetlist: %s", targetlist)
-		//remove(alivelist, addr)
 		doWormShutdownPost(addr)
-		//time.Sleep(500 * time.Millisecond)
-		//kanskje broadcaste hvem som dor
 	}
 
 }
@@ -490,11 +455,8 @@ func kill_seg() {
 
 func spawn_seg() {
 	for _, addr := range targetlist[:targetSegments-ping] {
-		//targetlist = remove(targetlist, i)
 		log.Printf("Host: %s tries to boot: %s", hostname, addr)
-		//log.Printf("Targetlist: %s", targetlist)
 		sendSegment(addr)
-		//time.Sleep(500 * time.Millisecond)
 		doBcastPost(addr)
 	}
 
@@ -520,7 +482,6 @@ func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 			if addr != hostname || addr+".local" != hostname {
 				//Sync targseg
 				doBcastPost(addr)
-				//time.Sleep(500 * time.Millisecond)
 
 			}
 		}
@@ -529,28 +490,15 @@ func targetSegmentsHandler(w http.ResponseWriter, r *http.Request) {
 			if addr != hostname || addr+".local" != hostname {
 				//Start lottery
 				doBcastTicket(addr)
-				//time.Sleep(500 * time.Millisecond)
 				find_winner()
-				//time.Sleep(500 * time.Millisecond)
 			}
 		}
 	} else {
 		if ping < targetSegments {
-			//if hostname == "compute-1-6.local" {
 			for _, addr := range targetlist[:targetSegments-ping] {
-				//targetlist = remove(targetlist, i)
-				//alivelist = append(alivelist, addr)
 				sendSegment(addr)
-				//time.Sleep(500 * time.Millisecond)
 				doBcastPost(addr)
 			}
-
-			//for i, addr := range alivelist {
-				//if contains(targetlist, addr) == true {
-					//targetlist = remove(targetlist, i)
-				//}
-
-			//}
 		}
 	}
 }
@@ -562,8 +510,41 @@ func shutdownHandler(w http.ResponseWriter, r *http.Request) {
 	io.Copy(ioutil.Discard, r.Body)
 	r.Body.Close()
 
+	list := fetchReachableHosts()
+
+	for {
+		deathping := 0
+		for _, addr := range list {
+			if addr+".local" != hostname {
+				segmentUrl := fmt.Sprintf("http://%s%s/", addr, segmentPort)
+				segment, _, _ := httpGetOk(segmentClient, segmentUrl)
+
+				if segment == true {
+					deathping++
+					doWormShutdownPost(addr)
+				}
+			}
+		}
+		if deathping == 0 {
+			// Shut down
+			log.Printf("Received shutdown command, committing suicide")
+			os.Exit(0)
+		}
+	}
+
 	// Shut down
 	log.Printf("Received shutdown command, committing suicide")
+	os.Exit(0)
+}
+
+func killsegmentsHandler(w http.ResponseWriter, r *http.Request) {
+
+	// Consume and close body
+	io.Copy(ioutil.Discard, r.Body)
+	r.Body.Close()
+
+	// Shut down
+	log.Printf("Received killsegment command, committing suicide")
 	os.Exit(0)
 }
 
